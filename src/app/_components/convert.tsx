@@ -1,13 +1,13 @@
 "use client";
 
-import { SunMoon } from "lucide-react";
+import { Lock, RefreshCw, RotateCcw, RotateCw, SunMoon } from "lucide-react";
 import {
   useRef,
   useState,
   useId,
   useCallback,
   useEffect,
-  type MutableRefObject,
+  type RefObject,
   type Dispatch,
   type SetStateAction,
 } from "react";
@@ -18,7 +18,10 @@ import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { Slider } from "~/components/ui/slider";
 import { Toggle } from "~/components/ui/toggle";
+import { ToggleGroup, ToggleGroupItem } from "~/components/ui/toggle-group";
 import { cn } from "~/lib/utils";
+
+type Rotation = "L" | "I" | "R" | undefined;
 
 async function loadPako() {
   if (window.pako !== undefined) {
@@ -31,6 +34,7 @@ async function convert(
   image: HTMLImageElement | null,
   size: Size,
   black: number,
+  rotation: Rotation,
 ) {
   if (image === null) {
     return;
@@ -44,7 +48,7 @@ async function convert(
     zplOptions: {
       black,
       notrim: true,
-      rotate: "N",
+      rotate: rotation,
     },
   });
 
@@ -81,59 +85,110 @@ type Size = {
   width: number;
   height: number;
   lock: boolean;
+  originalRatio: number;
 };
 
-export default function Test() {
-  const imageRef = useRef<HTMLImageElement>();
+function computeSize(prevSize: Size, width: number): Size {
+  if (!prevSize.lock) {
+    return {
+      ...prevSize,
+      width,
+    };
+  }
+
+  return {
+    ...prevSize,
+    width,
+    height: Math.round(prevSize.originalRatio * width),
+  };
+}
+
+function setSizeLock(prevSize: Size, locked: boolean): Size {
+  if (!locked) {
+    return {
+      ...prevSize,
+      lock: false,
+    };
+  }
+
+  return {
+    ...prevSize,
+    height: Math.round(prevSize.originalRatio * prevSize.width),
+    lock: true,
+  };
+}
+
+export default function ImageToZpl() {
+  const imageRef = useRef<HTMLImageElement>(null);
 
   const [black, setBlack] = useState([50]);
-  const [size, setSize] = useState<Size>({ width: 0, height: 0, lock: true });
+  const [size, setSize] = useState<Size>({
+    width: 0,
+    height: 0,
+    lock: true,
+    originalRatio: 0,
+  });
   const [result, setResult] = useState<string | undefined>(undefined);
+  const [rotation, setRotation] = useState<Rotation>(undefined);
 
-  // TODO https://labelary.com/viewer.html redirect
-  // https://labelary.com/viewer.html?density=8&width=4&height=2&units=inches&index=0&zpl=%5EXA%0A%5ECI28%0A%5ECF0%2C50%0A%5EFO100%2C100%5EFDJe%20n%C3%A4her%20dem%20Bein%2C%5EFS%0A%5EFO100%2C175%5EFDdesto%20s%C3%BC%C3%9Fer%20das%20Fleisch.%5EFS%0A%5EXZ
+  useEffect(() => {
+    setResult("");
+  }, [size, black, rotation]);
 
   return (
-    <div className="mx-auto max-w-lg flex flex-col gap-2">
-      <h1 className="text-3xl font-bold tracking-tight leading-normal">
-        image-to-zpl
-      </h1>
+    <div className="mx-auto max-w-lg flex flex-col gap-2 px-2 md:px-0 py-2">
+      <ImageDropzone imageRef={imageRef} setSize={setSize} />
 
-      <Dropzone imageRef={imageRef} setSize={setSize} />
-
-      <div className="flex flex-row gap-2">
+      <div className="flex flex-row gap-2 place-items-end">
         <LabeledInput
           label="Width"
           value={size.width}
-          setValue={(value) => setSize({ ...size, width: +value })}
+          setValue={(value) => setSize((prev) => computeSize(prev, +value))}
         />
+        <Toggle
+          aria-label="Toggle size ratio lock"
+          variant="outline"
+          pressed={size.lock}
+          onPressedChange={(pressed) =>
+            setSize((prev) => setSizeLock(prev, pressed))
+          }
+        >
+          <Lock className="w-4 h-4" />
+        </Toggle>
         <LabeledInput
           label="Height"
           value={size.height}
           setValue={(value) => setSize({ ...size, height: +value })}
+          disabled={size.lock}
         />
       </div>
 
-      <LabeledInput label="TODO: Lock Ratio" />
+      <div className="space-y-1">
+        <Label>Darkness</Label>
 
-      <Label>Darkness</Label>
+        <Slider
+          value={black}
+          onValueChange={setBlack}
+          min={0}
+          max={100}
+          step={1}
+        />
+      </div>
 
-      <Slider
-        value={black}
-        onValueChange={setBlack}
-        min={0}
-        max={100}
-        step={1}
-      />
-
-      {black}
+      {/* TODO add tooltips? */}
+      <RotationToggleGroup value={rotation ?? ""} setValue={setRotation} />
 
       <Button
         onClick={async () => {
-          const zpl = await convert(imageRef.current, size, black);
+          const zpl = await convert(
+            imageRef.current,
+            size,
+            black[0]!,
+            rotation,
+          );
           setResult(zpl);
         }}
-        disabled={imageRef.current === null}
+        disabled={imageRef.current === undefined}
       >
         Convert
       </Button>
@@ -141,38 +196,81 @@ export default function Test() {
       {result && (
         <div className="flex flex-col gap-2">
           <div className="flex flex-row gap-1">
-            <Button variant="outline" className="w-full">
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={async () => await navigator.clipboard.writeText(result)}
+            >
               Copy
             </Button>
-            <Button variant="outline" className="w-full">
-              Open Labelary
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={() =>
+                window.open(buildLabelaryLink(result, size, rotation), "_blank")
+              }
+            >
+              Open in Labelary
             </Button>
           </div>
+
+          {result.length > 8000 && (
+            <div className="text-xs text-right">
+              <span className="font-semibold">Open in Labelary</span> might not
+              work for large images
+            </div>
+          )}
 
           <div className="border rounded font-mono p-1 break-all text-sm font-medium max-h-96 overflow-y-auto">
             {result}
           </div>
         </div>
       )}
+
+      <div>
+        <div className="text-xs text-foreground/90">
+          The conversion is done offline using the{" "}
+          <a
+            href="https://github.com/metafloor/zpl-image"
+            className="underline-offset-4 hover:underline font-semibold"
+            target="_blank"
+          >
+            zpl-image
+          </a>{" "}
+          library, images do not leave your device.
+        </div>
+        <div className="text-xs text-muted-foreground">
+          Found any issues? Let me know on{" "}
+          <a
+            href="https://github.com/hiimnit/image-to-zpl/issues/new"
+            className="underline-offset-4 hover:underline font-semibold"
+            target="_blank"
+          >
+            github
+          </a>
+          .
+        </div>
+      </div>
     </div>
   );
 }
 
-function LabeledInput({
-  label,
-  value,
-  setValue,
-}: {
-  label: string;
-  value: string | number;
-  setValue: (value: string | number) => void;
-}) {
+function LabeledInput(
+  props: React.InputHTMLAttributes<HTMLInputElement> & {
+    label: string;
+    value: string | number;
+    setValue: (value: string | number) => void;
+  },
+) {
   const id = useId();
+
+  const { label, value, setValue, ...other } = props;
 
   return (
     <div className="w-full">
       <Label htmlFor={id}>{label}</Label>
       <Input
+        {...other}
         id={id}
         value={value}
         onChange={(e) => setValue(e.target.value)}
@@ -182,11 +280,11 @@ function LabeledInput({
   );
 }
 
-function Dropzone({
+function ImageDropzone({
   imageRef,
   setSize,
 }: {
-  imageRef: MutableRefObject<HTMLImageElement | undefined>;
+  imageRef: RefObject<HTMLImageElement>;
   setSize: Dispatch<SetStateAction<Size>>;
 }) {
   const [url, setUrl] = useState<string | undefined>(undefined);
@@ -214,30 +312,13 @@ function Dropzone({
 
   const [lightBgColor, setLightBgColor] = useState(false);
 
-  const imageRefCallback = useCallback(
-    (img: HTMLImageElement) => {
-      imageRef.current = img ?? undefined;
-
-      if (img !== null) {
-        setTimeout(() => {
-          setSize({
-            width: img.width,
-            height: img.height,
-            lock: true,
-          });
-        }, 100);
-      }
-    },
-    [imageRef, setSize],
-  );
-
   return (
-    <div className="relative">
+    <div className="relative space-y-2 sm:space-y-0">
       <div
         {...getRootProps()}
         className={cn(
-          "rounded-lg max-h-96 border text-center transition-all",
-          url === undefined ? "p-8" : "p-4",
+          "rounded-lg max-h-[48rem] border text-center transition-all flex items-center justify-center overflow-auto select-none cursor-pointer",
+          url === undefined ? "p-8" : "p-2",
           lightBgColor
             ? "bg-foreground text-background"
             : "bg-background text-foreground",
@@ -250,14 +331,27 @@ function Dropzone({
         {url !== undefined ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            ref={imageRefCallback}
+            ref={imageRef}
+            onLoad={(e) => {
+              const img = e.target as HTMLImageElement;
+              setSize({
+                width: img.naturalWidth,
+                height: img.naturalHeight,
+                lock: true,
+                originalRatio:
+                  img.naturalWidth !== 0
+                    ? img.naturalHeight / img.naturalWidth
+                    : 0,
+              });
+            }}
             src={url}
+            className="max-h-[40rem]"
             alt="Selected file can not be displayed as an image"
           />
         ) : isDragActive ? (
-          <p>Drop the file here</p>
+          <>Drop the file here</>
         ) : (
-          <p>Drop image here or click to select files</p>
+          <>Drop image here or click to select files</>
         )}
       </div>
 
@@ -272,4 +366,61 @@ function Dropzone({
       </Toggle>
     </div>
   );
+}
+
+function RotationToggleGroup({
+  value,
+  setValue,
+}: {
+  value: string;
+  setValue: Dispatch<SetStateAction<"R" | "L" | "I" | undefined>>;
+}) {
+  return (
+    <div>
+      <Label htmlFor="rotate-toggles">Rotate</Label>
+      <ToggleGroup
+        id="rotate-toggles"
+        type="single"
+        className="justify-start"
+        value={value}
+        onValueChange={(e) => {
+          if (e === "R" || e === "L" || e === "I") {
+            setValue(e);
+            return;
+          }
+          setValue(undefined);
+        }}
+      >
+        <ToggleGroupItem value="L" variant="outline" aria-label="Rotate left">
+          <RotateCcw className="h-4 w-4" />
+        </ToggleGroupItem>
+        <ToggleGroupItem
+          value="I"
+          variant="outline"
+          aria-label="Rotate around/Invert"
+        >
+          <RefreshCw className="h-4 w-4" />
+        </ToggleGroupItem>
+        <ToggleGroupItem value="R" variant="outline" aria-label="Rotate right">
+          <RotateCw className="h-4 w-4" />
+        </ToggleGroupItem>
+      </ToggleGroup>
+    </div>
+  );
+}
+
+function buildLabelaryLink(
+  imageZpl: string,
+  size: { width: number; height: number },
+  rotation: Rotation,
+) {
+  const swapSize = rotation === "L" || rotation === "R";
+
+  const dpiPerMM = 8;
+  const width = Math.round((swapSize ? size.height : size.width) / dpiPerMM);
+  const height = Math.round((swapSize ? size.width : size.height) / dpiPerMM);
+
+  const zpl = `^XA${imageZpl}^XZ`;
+
+  return `https://labelary.com/viewer.html?density=${dpiPerMM}&width=${width}&height=${height}&units=mm&index=0&zpl=${zpl}`;
 }
